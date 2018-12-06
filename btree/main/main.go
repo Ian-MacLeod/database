@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	tree := btree.NewBTree(3)
+	tree := btree.New(3)
 
 	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	values := []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
@@ -27,9 +27,9 @@ func main() {
 	fmt.Println(tree.Find(""))
 	fmt.Println(tree.Find("k"))
 
-	tree = btree.NewBTree(12)
+	tree = btree.New(12)
 	const numEntries = int(1e6)
-	const numQueues = 12
+	const numQueues = 8
 	const queueSize = numEntries / numQueues
 	var entries [][2]string
 	var wg sync.WaitGroup

@@ -5,21 +5,16 @@ import (
 )
 
 type BTree struct {
-	Root      Node
-	maxKeys   int
-	mux       sync.RWMutex
-	parentMux sync.RWMutex
+	Root    Node
+	maxKeys int
+	mux     sync.RWMutex
 }
 
-func NewBTree(maxKeys int) BTree {
+func New(maxKeys int) BTree {
 	return BTree{
 		Root:    &LeafNode{MaxKeys: maxKeys},
 		maxKeys: maxKeys,
 	}
-}
-
-func (tree *BTree) GetMux() *sync.RWMutex {
-	return &tree.mux
 }
 
 func (tree *BTree) Find(key string) (value string, ok bool) {
@@ -27,38 +22,35 @@ func (tree *BTree) Find(key string) (value string, ok bool) {
 	return tree.Root.Find(key, &tree.mux)
 }
 
-func (tree *BTree) IsStable() bool {
-	return true
-}
-
-func (tree *BTree) SafeUpsert(key, value string) InsertionResult {
-	tree.Root.GetMux().Lock()
-	defer tree.Root.GetMux().Unlock()
-	return tree.Root.SafeUpsert(key, value)
-}
-
-func (tree *BTree) GetStableAncestor(key string) (SafeUpserter, *sync.RWMutex) {
-	tree.parentMux.RLock()
-	lockContext := LockContext{
-		Muxes: []*sync.RWMutex{&tree.parentMux},
-	}
-	lockContext.Add(tree)
+func (tree *BTree) GetStableAncestor(key string) (Node, *sync.RWMutex) {
+	lockContext := NewLockContext(tree)
 	tree.Root.AcquireLockContext(key, &lockContext)
 	return lockContext.Resolve()
 }
 
 func (tree *BTree) Upsert(key, value string) (created bool) {
 	stableAncestor, parentMux := tree.GetStableAncestor(key)
-	stableAncestor.GetMux().Lock()
-	if !stableAncestor.IsStable() {
+
+	if stableAncestor == nil {
 		parentMux.RUnlock()
-		stableAncestor.GetMux().Unlock()
-		return tree.Upsert(key, value)
+		tree.mux.Lock()
+		defer tree.mux.Unlock()
+		stableAncestor = tree.Root
+		stableAncestor.GetMux().Lock()
+		defer stableAncestor.GetMux().Unlock()
+	} else {
+		stableAncestor.GetMux().Lock()
+		if !stableAncestor.IsStable() {
+			parentMux.RUnlock()
+			stableAncestor.GetMux().Unlock()
+			return tree.Upsert(key, value)
+		}
+		defer stableAncestor.GetMux().Unlock()
+		defer parentMux.RUnlock()
 	}
-	defer parentMux.RUnlock()
-	defer stableAncestor.GetMux().Unlock()
+
 	result := stableAncestor.SafeUpsert(key, value)
-	if result.Left != nil {
+	if result.DidSplit() {
 		tree.Root = &IntermediateNode{
 			Keys:     []string{result.SplitKey},
 			Children: []Node{result.Left, result.Right},
@@ -66,5 +58,6 @@ func (tree *BTree) Upsert(key, value string) (created bool) {
 			Mux:      sync.RWMutex{},
 		}
 	}
+
 	return result.Created
 }

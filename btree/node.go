@@ -35,39 +35,8 @@ type Node interface {
 	IsStable() bool
 }
 
-type SafeUpserter interface {
-	SafeUpsert(updateKey, value string) InsertionResult
-	GetMux() *sync.RWMutex
-	IsStable() bool
-}
-
-type LockContext struct {
-	Muxes          []*sync.RWMutex
-	StableAncestor SafeUpserter
-}
-
-func (ctx *LockContext) UpdateStableAncestor(ancestor SafeUpserter) {
-	for _, mux := range ctx.Muxes[:len(ctx.Muxes)-1] {
-		mux.RUnlock()
-	}
-	ctx.Muxes = ctx.Muxes[len(ctx.Muxes)-1:]
-
-	ctx.StableAncestor = ancestor
-}
-
-func (ctx *LockContext) Add(node SafeUpserter) {
-	node.GetMux().RLock()
-	if node.IsStable() {
-		ctx.UpdateStableAncestor(node)
-	}
-	ctx.Muxes = append(ctx.Muxes, node.GetMux())
-}
-
-func (ctx *LockContext) Resolve() (SafeUpserter, *sync.RWMutex) {
-	for _, mux := range ctx.Muxes[1:] {
-		mux.RUnlock()
-	}
-	return ctx.StableAncestor, ctx.Muxes[0]
+func (result *InsertionResult) DidSplit() bool {
+	return result.Left != nil
 }
 
 func (node *IntermediateNode) GetMux() *sync.RWMutex {
@@ -116,13 +85,17 @@ func (node *LeafNode) AcquireLockContext(updateKey string, lockContext *LockCont
 	lockContext.Add(node)
 }
 
+/*
+SafeUpsert assumes that the caller holds write locks on the node itself, and all its
+ancestors until a stable node is reached.
+*/
 func (node *IntermediateNode) SafeUpsert(updateKey, value string) InsertionResult {
 	idx := node.indexContaining(updateKey)
 	child := node.Children[idx]
 	child.GetMux().Lock()
 	defer child.GetMux().Unlock()
 	result := child.SafeUpsert(updateKey, value)
-	if result.Left == nil {
+	if !result.DidSplit() {
 		return result
 	}
 	node.Keys = insert(node.Keys, idx, result.SplitKey)
@@ -135,6 +108,10 @@ func (node *IntermediateNode) SafeUpsert(updateKey, value string) InsertionResul
 	return InsertionResult{Created: result.Created}
 }
 
+/*
+SafeUpsert assumes that the caller holds write locks on the node itself, and all its
+ancestors until a stable node is reached.
+*/
 func (node *LeafNode) SafeUpsert(updateKey, value string) InsertionResult {
 	idx := 0
 	for idx < len(node.Keys) && updateKey > node.Keys[idx] {
@@ -162,9 +139,9 @@ func (node *IntermediateNode) indexContaining(findKey string) int {
 }
 
 func (node *LeafNode) Split() (Node, Node, string) {
-	rightKeys := make([]string, len(node.Keys)-len(node.Keys)/2)
+	rightKeys := make([]string, len(node.Keys)-len(node.Keys)/2, node.MaxKeys)
 	copy(rightKeys, node.Keys[len(node.Keys)/2:])
-	rightValues := make([]string, len(node.Values)-len(node.Values)/2)
+	rightValues := make([]string, len(node.Values)-len(node.Values)/2, node.MaxKeys+1)
 	copy(rightValues, node.Values[len(node.Values)/2:])
 	right := LeafNode{
 		Keys:    rightKeys,
@@ -184,9 +161,9 @@ func (node *LeafNode) Split() (Node, Node, string) {
 func (node *IntermediateNode) Split() (Node, Node, string) {
 	medianIndex := len(node.Keys) / 2
 	splitKey := node.Keys[medianIndex]
-	rightKeys := make([]string, len(node.Keys)-medianIndex-1)
+	rightKeys := make([]string, len(node.Keys)-medianIndex-1, node.MaxKeys)
 	copy(rightKeys, node.Keys[medianIndex+1:])
-	rightChildren := make([]Node, len(node.Children)-medianIndex-1)
+	rightChildren := make([]Node, len(node.Children)-medianIndex-1, node.MaxKeys+1)
 	copy(rightChildren, node.Children[medianIndex+1:])
 	right := IntermediateNode{
 		Keys:     rightKeys,
@@ -199,18 +176,4 @@ func (node *IntermediateNode) Split() (Node, Node, string) {
 		MaxKeys:  node.MaxKeys,
 	}
 	return &left, &right, splitKey
-}
-
-func insert(slice []string, idx int, value string) []string {
-	slice = append(slice, "")
-	copy(slice[idx+1:], slice[idx:])
-	slice[idx] = value
-	return slice
-}
-
-func insertNode(slice []Node, idx int, node Node) []Node {
-	slice = append(slice, nil)
-	copy(slice[idx+1:], slice[idx:])
-	slice[idx] = node
-	return slice
 }
