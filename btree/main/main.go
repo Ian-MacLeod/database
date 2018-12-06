@@ -73,4 +73,10 @@ func main() {
 	}
 	fmt.Println(count)
 	fmt.Println(end.Sub(start))
+
+	manager := btree.NewTransactionManager()
+	for i := 0; i < numEntries; i++ {
+		tree.PrepareFind(&manager, "key-"+strconv.Itoa(i))
+	}
+	fmt.Println(len(manager.Locks))
 }

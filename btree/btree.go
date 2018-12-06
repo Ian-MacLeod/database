@@ -61,3 +61,8 @@ func (tree *BTree) Upsert(key, value string) (created bool) {
 
 	return result.Created
 }
+
+func (tree *BTree) PrepareFind(manager *TransactionManager, key string) {
+	manager.RLock(&tree.mux)
+	tree.Root.PrepareFind(manager, key, &tree.mux)
+}

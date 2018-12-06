@@ -33,6 +33,7 @@ type Node interface {
 	GetMux() *sync.RWMutex
 	AcquireLockContext(updateKey string, lockContext *LockContext)
 	IsStable() bool
+	PrepareFind(manager *TransactionManager, key string, parentMux *sync.RWMutex)
 }
 
 func (result *InsertionResult) DidSplit() bool {
@@ -176,4 +177,16 @@ func (node *IntermediateNode) Split() (Node, Node, string) {
 		MaxKeys:  node.MaxKeys,
 	}
 	return &left, &right, splitKey
+}
+
+func (node *IntermediateNode) PrepareFind(manager *TransactionManager, key string, parentMux *sync.RWMutex) {
+	manager.RUnlock(parentMux)
+	manager.RLock(&node.Mux)
+	idx := node.indexContaining(key)
+	node.Children[idx].PrepareFind(manager, key, &node.Mux)
+}
+
+func (node *LeafNode) PrepareFind(manager *TransactionManager, key string, parentMux *sync.RWMutex) {
+	manager.RUnlock(parentMux)
+	manager.Add(&node.Mux)
 }
