@@ -74,9 +74,100 @@ func main() {
 	fmt.Println(count)
 	fmt.Println(end.Sub(start))
 
-	manager := btree.NewTransactionManager()
+	manager := tree.GetReadTransactionManager()
 	for i := 0; i < numEntries; i++ {
-		tree.PrepareFind(&manager, "key-"+strconv.Itoa(i))
+		key, _ := manager.Find("key-" + strconv.Itoa(i))
+		if key != "value-"+strconv.Itoa(i) {
+			panic("Problem")
+		}
 	}
 	fmt.Println(len(manager.Locks))
+	manager.End()
+
+	fuzz := func() {
+		fuzz := time.Duration(rand.Int()%1000) * time.Millisecond
+		time.Sleep(fuzz)
+	}
+
+	t1 := func() {
+		fuzz()
+		writeManager := tree.GetWriteTransactionManager()
+		defer writeManager.End()
+		fuzz()
+		writeManager.Upsert("1", "a")
+		fuzz()
+		writeManager.Upsert("2", "a")
+		fuzz()
+		one, _ := writeManager.Find("1")
+		fuzz()
+		two, _ := writeManager.Find("2")
+		if one != two {
+			panic("Problem")
+		}
+		wg.Done()
+	}
+
+	t2 := func() {
+		fuzz()
+		writeManager := tree.GetWriteTransactionManager()
+		defer writeManager.End()
+		fuzz()
+		writeManager.Upsert("1", "b")
+		fuzz()
+		writeManager.Upsert("2", "b")
+		fuzz()
+		one, _ := writeManager.Find("1")
+		fuzz()
+		two, _ := writeManager.Find("2")
+		if one != two {
+			panic("Problem")
+		}
+		wg.Done()
+	}
+
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+		go t1()
+		go t2()
+	}
+	wg.Wait()
+
+	// w1 := func() {
+	// 	fuzz()
+	// 	tree.Upsert("1", "a")
+	// 	fuzz()
+	// 	tree.Upsert("2", "a")
+	// 	fuzz()
+	// 	one, _ := tree.Find("1")
+	// 	fuzz()
+	// 	two, _ := tree.Find("2")
+	// 	fuzz()
+	// 	if one != two {
+	// 		panic("Problem")
+	// 	}
+	// 	wg.Done()
+	// }
+
+	// w2 := func() {
+	// 	fuzz()
+	// 	tree.Upsert("1", "b")
+	// 	fuzz()
+	// 	tree.Upsert("2", "b")
+	// 	fuzz()
+	// 	one, _ := tree.Find("1")
+	// 	fuzz()
+	// 	two, _ := tree.Find("2")
+	// 	fuzz()
+	// 	if one != two {
+	// 		panic("Problem")
+	// 	}
+	// 	wg.Done()
+	// }
+
+	// for i := 0; i < 10; i++ {
+	// 	wg.Add(2)
+	// 	go w1()
+	// 	go w2()
+	// }
+	// wg.Wait()
 }

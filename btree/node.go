@@ -27,13 +27,12 @@ type InsertionResult struct {
 }
 
 type Node interface {
-	Find(findKey string, parentMux *sync.RWMutex) (string, bool)
-	SafeUpsert(updateKey, value string) InsertionResult
+	Find(manager TransactionManager, findKey string, parentMux *sync.RWMutex) (string, bool)
+	SafeUpsert(manager TransactionManager, updateKey, value string) InsertionResult
 	Split() (Node, Node, string)
 	GetMux() *sync.RWMutex
 	AcquireLockContext(updateKey string, lockContext *LockContext)
 	IsStable() bool
-	PrepareFind(manager *TransactionManager, key string, parentMux *sync.RWMutex)
 }
 
 func (result *InsertionResult) DidSplit() bool {
@@ -48,17 +47,16 @@ func (node *LeafNode) GetMux() *sync.RWMutex {
 	return &node.Mux
 }
 
-func (node *IntermediateNode) Find(findKey string, parentMux *sync.RWMutex) (value string, ok bool) {
-	node.Mux.RLock()
-	parentMux.RUnlock()
+func (node *IntermediateNode) Find(manager TransactionManager, findKey string, parentMux *sync.RWMutex) (value string, ok bool) {
+	manager.RLock(&node.Mux)
+	manager.RUnlock(parentMux)
 	idx := node.indexContaining(findKey)
-	return node.Children[idx].Find(findKey, &node.Mux)
+	return node.Children[idx].Find(manager, findKey, &node.Mux)
 }
 
-func (node *LeafNode) Find(findKey string, parentMux *sync.RWMutex) (value string, ok bool) {
-	node.Mux.RLock()
-	defer node.Mux.RUnlock()
-	parentMux.RUnlock()
+func (node *LeafNode) Find(manager TransactionManager, findKey string, parentMux *sync.RWMutex) (value string, ok bool) {
+	manager.Add(&node.Mux)
+	manager.RUnlock(parentMux)
 	for idx, key := range node.Keys {
 		if findKey == key {
 			return node.Values[idx], true
@@ -90,12 +88,11 @@ func (node *LeafNode) AcquireLockContext(updateKey string, lockContext *LockCont
 SafeUpsert assumes that the caller holds write locks on the node itself, and all its
 ancestors until a stable node is reached.
 */
-func (node *IntermediateNode) SafeUpsert(updateKey, value string) InsertionResult {
+func (node *IntermediateNode) SafeUpsert(manager TransactionManager, updateKey, value string) InsertionResult {
 	idx := node.indexContaining(updateKey)
 	child := node.Children[idx]
-	child.GetMux().Lock()
-	defer child.GetMux().Unlock()
-	result := child.SafeUpsert(updateKey, value)
+	manager.Add(child.GetMux())
+	result := child.SafeUpsert(manager, updateKey, value)
 	if !result.DidSplit() {
 		return result
 	}
@@ -113,7 +110,7 @@ func (node *IntermediateNode) SafeUpsert(updateKey, value string) InsertionResul
 SafeUpsert assumes that the caller holds write locks on the node itself, and all its
 ancestors until a stable node is reached.
 */
-func (node *LeafNode) SafeUpsert(updateKey, value string) InsertionResult {
+func (node *LeafNode) SafeUpsert(manager TransactionManager, updateKey, value string) InsertionResult {
 	idx := 0
 	for idx < len(node.Keys) && updateKey > node.Keys[idx] {
 		idx++
@@ -177,16 +174,4 @@ func (node *IntermediateNode) Split() (Node, Node, string) {
 		MaxKeys:  node.MaxKeys,
 	}
 	return &left, &right, splitKey
-}
-
-func (node *IntermediateNode) PrepareFind(manager *TransactionManager, key string, parentMux *sync.RWMutex) {
-	manager.RUnlock(parentMux)
-	manager.RLock(&node.Mux)
-	idx := node.indexContaining(key)
-	node.Children[idx].PrepareFind(manager, key, &node.Mux)
-}
-
-func (node *LeafNode) PrepareFind(manager *TransactionManager, key string, parentMux *sync.RWMutex) {
-	manager.RUnlock(parentMux)
-	manager.Add(&node.Mux)
 }

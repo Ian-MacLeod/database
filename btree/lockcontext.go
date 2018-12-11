@@ -5,18 +5,20 @@ import "sync"
 type LockContext struct {
 	Muxes          []*sync.RWMutex
 	StableAncestor Node
+	Manager        TransactionManager
 }
 
-func NewLockContext(tree *BTree) LockContext {
+func NewLockContext(tree *BTree, manager TransactionManager) LockContext {
 	tree.mux.RLock()
 	return LockContext{
-		Muxes: []*sync.RWMutex{&tree.mux},
+		Muxes:   []*sync.RWMutex{&tree.mux},
+		Manager: manager,
 	}
 }
 
 func (ctx *LockContext) UpdateStableAncestor(ancestor Node) {
 	for _, mux := range ctx.Muxes[:len(ctx.Muxes)-2] {
-		mux.RUnlock()
+		ctx.Manager.RUnlock(mux)
 	}
 	ctx.Muxes = ctx.Muxes[len(ctx.Muxes)-2:]
 
@@ -24,7 +26,7 @@ func (ctx *LockContext) UpdateStableAncestor(ancestor Node) {
 }
 
 func (ctx *LockContext) Add(node Node) {
-	node.GetMux().RLock()
+	ctx.Manager.RLock(node.GetMux())
 	ctx.Muxes = append(ctx.Muxes, node.GetMux())
 
 	if node.IsStable() {
@@ -34,7 +36,7 @@ func (ctx *LockContext) Add(node Node) {
 
 func (ctx *LockContext) Resolve() (Node, *sync.RWMutex) {
 	for _, mux := range ctx.Muxes[1:] {
-		mux.RUnlock()
+		ctx.Manager.RUnlock(mux)
 	}
 	return ctx.StableAncestor, ctx.Muxes[0]
 }

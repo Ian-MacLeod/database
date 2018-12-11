@@ -17,39 +17,66 @@ func New(maxKeys int) BTree {
 	}
 }
 
-func (tree *BTree) Find(key string) (value string, ok bool) {
-	tree.mux.RLock()
-	return tree.Root.Find(key, &tree.mux)
+func (tree *BTree) Find(key string) (string, bool) {
+	manager := tree.GetReadTransactionManager()
+	value, ok := tree.TransactionFind(manager, key)
+	manager.End()
+	return value, ok
 }
 
-func (tree *BTree) GetStableAncestor(key string) (Node, *sync.RWMutex) {
-	lockContext := NewLockContext(tree)
+func (tree *BTree) GetStableAncestor(manager TransactionManager, key string) (Node, *sync.RWMutex) {
+	lockContext := NewLockContext(tree, manager)
 	tree.Root.AcquireLockContext(key, &lockContext)
 	return lockContext.Resolve()
 }
 
-func (tree *BTree) Upsert(key, value string) (created bool) {
-	stableAncestor, parentMux := tree.GetStableAncestor(key)
+func (tree *BTree) Upsert(key, value string) bool {
+	manager := tree.GetWriteTransactionManager()
+	created := tree.TransactionUpsert(manager, key, value)
+	manager.End()
+	return created
+}
+
+func (tree *BTree) GetReadTransactionManager() *ReadTransactionManager {
+	return &ReadTransactionManager{
+		Locks: make(map[*sync.RWMutex]struct{}),
+		Tree:  tree,
+	}
+}
+
+func (tree *BTree) GetWriteTransactionManager() *WriteTransactionManager {
+	return &WriteTransactionManager{
+		Locks: make(map[*sync.RWMutex]struct{}),
+		Tree:  tree,
+	}
+}
+
+func (tree *BTree) TransactionFind(manager TransactionManager, key string) (value string, ok bool) {
+	manager.RLock(&tree.mux)
+	return tree.Root.Find(manager, key, &tree.mux)
+}
+
+func (tree *BTree) TransactionUpsert(manager TransactionManager, key, value string) (created bool) {
+	stableAncestor, parentMux := tree.GetStableAncestor(manager, key)
 
 	if stableAncestor == nil {
-		parentMux.RUnlock()
-		tree.mux.Lock()
-		defer tree.mux.Unlock()
+		manager.RUnlock(parentMux)
+		manager.Lock(&tree.mux)
+		defer manager.Unlock(&tree.mux)
 		stableAncestor = tree.Root
-		stableAncestor.GetMux().Lock()
-		defer stableAncestor.GetMux().Unlock()
+		manager.Add(stableAncestor.GetMux())
 	} else {
-		stableAncestor.GetMux().Lock()
+		manager.Lock(stableAncestor.GetMux())
 		if !stableAncestor.IsStable() {
-			parentMux.RUnlock()
-			stableAncestor.GetMux().Unlock()
-			return tree.Upsert(key, value)
+			manager.RUnlock(parentMux)
+			manager.Unlock(stableAncestor.GetMux())
+			return tree.TransactionUpsert(manager, key, value)
 		}
-		defer stableAncestor.GetMux().Unlock()
-		defer parentMux.RUnlock()
+		manager.AddLocked(stableAncestor.GetMux())
+		defer manager.RUnlock(parentMux)
 	}
 
-	result := stableAncestor.SafeUpsert(key, value)
+	result := stableAncestor.SafeUpsert(manager, key, value)
 	if result.DidSplit() {
 		tree.Root = &IntermediateNode{
 			Keys:     []string{result.SplitKey},
@@ -60,9 +87,4 @@ func (tree *BTree) Upsert(key, value string) (created bool) {
 	}
 
 	return result.Created
-}
-
-func (tree *BTree) PrepareFind(manager *TransactionManager, key string) {
-	manager.RLock(&tree.mux)
-	tree.Root.PrepareFind(manager, key, &tree.mux)
 }
